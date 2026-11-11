@@ -1,14 +1,15 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { INestApplication } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import type { ExecutionContext, INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/configure-app.js';
+import { SessionGuard } from '../src/auth/session.guard.js';
 import { User } from '../src/auth/user.entity.js';
 import { databaseOptions } from '../src/database/options.js';
 import { ReminderService } from '../src/notifications/reminder.service.js';
@@ -58,11 +59,20 @@ before(async () => {
 
   await db.getRepository(User).insert([...actors.values()].map(({ id }, index) =>
     ({ id, oidcIssuer: 'https://issuer.example/realm', oidcSubject: 'subject-' + index, name: 'Test user ' + index, email: 'user' + index + '@example.test' })));
-  app = await NestFactory.create(AppModule, { logger: false, abortOnError: false });
-  app.use((req: { headers: { authorization?: string }; user?: unknown }, _res: unknown, next: () => void) => {
-    req.user = actors.get(req.headers.authorization ?? '');
-    next();
+  Object.assign(process.env, {
+    APP_ORIGIN: 'http://localhost:3100', OIDC_ISSUER: 'http://localhost:8180/realms/roombook',
+    OIDC_CLIENT_SECRET: 'fixture-only-client-secret', OIDC_ALLOW_LOCAL_HTTP: 'true',
+    SESSION_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
   });
+  const testingModule = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(SessionGuard).useValue({
+      canActivate(context: ExecutionContext) {
+        const req = context.switchToHttp().getRequest<{ headers: { authorization?: string }; user?: unknown }>();
+        req.user = actors.get(req.headers.authorization ?? '');
+        return true;
+      },
+    }).compile();
+  app = testingModule.createNestApplication({ logger: false });
   configureApp(app);
   await app.init();
   const room = await api().post('/api/rooms').set('Authorization', 'admin')

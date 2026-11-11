@@ -7,6 +7,8 @@ import { ReminderJob } from '../notifications/reminder-job.entity.js';
 import { Room } from '../rooms/room.entity.js';
 import { CreateBookingSchema1760000000000 } from './migrations/1760000000000-create-booking-schema.js';
 
+import { CreateAuthSchema1760000000001 } from './migrations/1760000000001-create-auth-schema.js';
+
 export function databaseOptions(): DataSourceOptions {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL is required');
@@ -20,6 +22,6 @@ export function databaseOptions(): DataSourceOptions {
     installExtensions: false,
     uuidExtension: 'pgcrypto',
     entities: [User, Room, Occupancy, BookingIdempotency, Notification, ReminderJob],
-    migrations: [CreateBookingSchema1760000000000],
+    migrations: [CreateBookingSchema1760000000000, CreateAuthSchema1760000000001],
   };
 }

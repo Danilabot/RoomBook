@@ -1,8 +1,10 @@
 import { createParamDecorator, ExecutionContext, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 
+export type Role = 'employee' | 'admin';
+
 export interface Actor {
   id: string;
-  roles: string[];
+  roles: Role[];
 }
 
 export const CurrentActor = createParamDecorator(
