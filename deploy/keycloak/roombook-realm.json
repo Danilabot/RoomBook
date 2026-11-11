@@ -1,0 +1,111 @@
+{
+  "realm": "roombook",
+  "enabled": true,
+  "displayName": "RoomBook",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginWithEmailAllowed": true,
+  "bruteForceProtected": true,
+  "defaultSignatureAlgorithm": "RS256",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "roles": {
+    "client": {
+      "roombook-api": [
+        { "name": "employee" },
+        { "name": "admin" }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "roombook-web",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": ["http://localhost:3100/api/auth/callback"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3100/api/auth/logout/callback"
+      },
+      "defaultClientScopes": ["basic", "profile", "email"],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "RoomBook API audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "roombook-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "RoomBook API roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "roombook-api",
+            "claim.name": "resource_access.roombook-api.roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "roombook-api",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ],
+  "clientScopeMappings": {
+    "roombook-api": [
+      { "client": "roombook-web", "roles": ["employee", "admin"] }
+    ]
+  },
+  "users": [
+    {
+      "username": "employee",
+      "enabled": true,
+      "email": "employee@roombook.invalid",
+      "emailVerified": true,
+      "firstName": "Демо",
+      "lastName": "Сотрудник",
+      "requiredActions": [],
+      "credentials": [{ "type": "password", "value": "${DEMO_EMPLOYEE_PASSWORD}", "temporary": false }],
+      "clientRoles": { "roombook-api": ["employee"] }
+    },
+    {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@roombook.invalid",
+      "emailVerified": true,
+      "firstName": "Демо",
+      "lastName": "Администратор",
+      "requiredActions": [],
+      "credentials": [{ "type": "password", "value": "${DEMO_ADMIN_PASSWORD}", "temporary": false }],
+      "clientRoles": { "roombook-api": ["employee", "admin"] }
+    }
+  ]
+}

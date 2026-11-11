@@ -13,7 +13,8 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
-    "web:test": "npm --prefix web test"
+    "web:test": "npm --prefix web test",
+    "seed:demo": "node dist/src/database/seed.js"
   },
   "dependencies": {
     "@nestjs/common": "12.2.0",

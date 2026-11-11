@@ -3,6 +3,8 @@ import type { MigrationInterface, QueryRunner } from 'typeorm';
 export class CreateBookingSchema1760000000000 implements MigrationInterface {
   async up(queryRunner: QueryRunner): Promise<void> {
     const schema = queryRunner.connection.driver.escape(queryRunner.connection.driver.schema ?? 'public');
+    // Extension installation is shared by all schemas in this database.
+    await queryRunner.query("SELECT pg_advisory_xact_lock(hashtextextended('roombook:btree_gist', 0))");
     await queryRunner.query('CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public');
     await queryRunner.query(`
       CREATE TABLE ${schema}.users (
