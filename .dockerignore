@@ -6,3 +6,4 @@ dist
 coverage
 web/node_modules
 web/dist
+.local

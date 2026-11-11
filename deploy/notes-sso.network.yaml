@@ -1,0 +1,12 @@
+services:
+  keycloak:
+    networks:
+      default:
+      roombook-sso:
+        aliases:
+          - notes-keycloak
+
+networks:
+  roombook-sso:
+    external: true
+    name: roombook-notes-sso

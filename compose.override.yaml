@@ -1,0 +1,14 @@
+services:
+  api:
+    environment:
+      OIDC_ISSUER: http://localhost:8080/realms/notes
+      OIDC_INTERNAL_ORIGIN: http://notes-keycloak:8080
+      OIDC_CLIENT_SECRET: ${SHARED_OIDC_CLIENT_SECRET:?Run node scripts/setup-shared-sso.mjs}
+    networks:
+      - default
+      - notes-sso
+
+networks:
+  notes-sso:
+    external: true
+    name: roombook-notes-sso

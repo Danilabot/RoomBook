@@ -10,6 +10,8 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module.js';
+import { AuthSessions } from '../src/auth/auth-sessions.js';
+import { OidcProvider } from '../src/auth/oidc-provider.js';
 import { authSettings } from '../src/auth/auth-settings.js';
 import { configureApp } from '../src/configure-app.js';
 import { databaseOptions } from '../src/database/options.js';
@@ -162,6 +164,22 @@ test('binds callbacks to one browser and consumes matching attempts once', async
   await callback(binding, randomBytes(32).toString('base64url')).expect(401);
   await callback(binding, state).expect(302);
   await callback(binding, state).expect(401);
+});
+
+test('rejects a valid session and pending callback from another issuer', async () => {
+  const session = await login();
+  const { binding, state } = await startLogin();
+  const alternate = new AuthSessions(db, app.get(OidcProvider), {
+    ...authSettings(), issuer: 'http://localhost:8080/realms/notes',
+  });
+  const cookieValue = (value: string) => value.slice(value.indexOf('=') + 1);
+  await assert.rejects(alternate.authenticate(cookieValue(session)), { status: 401 });
+  await assert.rejects(alternate.csrf(cookieValue(session)), { status: 401 });
+
+  const url = new URL(origin + '/api/auth/callback');
+  url.search = new URLSearchParams({ state, code: 'fixture-code', iss: issuer }).toString();
+  await assert.rejects(alternate.finishLogin(url, cookieValue(binding), undefined), { status: 401 });
+  await api().get('/api/auth/me').set('Cookie', session).expect(200);
 });
 
 test('rejects invalid token signature, nonce, audience and provider session identity', async () => {

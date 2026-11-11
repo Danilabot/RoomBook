@@ -38,8 +38,8 @@ export function authSettings(env: NodeJS.ProcessEnv = process.env): AuthSettings
   if (localHttp && (!isLoopback(origin.hostname) || !isLoopback(issuer.hostname))) {
     throw new Error('OIDC_ALLOW_LOCAL_HTTP requires loopback browser origins');
   }
-  if (internal?.protocol === 'http:' && !isLoopback(internal.hostname) && internal.hostname !== 'keycloak') {
-    throw new Error('OIDC_INTERNAL_ORIGIN HTTP requires keycloak or a loopback host');
+  if (internal?.protocol === 'http:' && !isLoopback(internal.hostname) && !['keycloak', 'notes-keycloak'].includes(internal.hostname)) {
+    throw new Error('OIDC_INTERNAL_ORIGIN HTTP requires a known local Keycloak host');
   }
   const clientSecret = env.OIDC_CLIENT_SECRET;
   if (!clientSecret?.trim()) throw new Error('OIDC_CLIENT_SECRET is required');

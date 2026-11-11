@@ -21,55 +21,6 @@ services:
       timeout: 3s
       retries: 30
 
-  keycloak-db:
-    image: postgres:18
-    environment:
-      POSTGRES_DB: keycloak
-      POSTGRES_USER: keycloak
-      POSTGRES_PASSWORD: ${KEYCLOAK_POSTGRES_PASSWORD:?Run scripts/init-env.sh}
-    volumes:
-      - keycloak-data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U keycloak -d keycloak"]
-      interval: 3s
-      timeout: 3s
-      retries: 30
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.6.4
-    command: ["start-dev", "--import-realm"]
-    depends_on:
-      keycloak-db:
-        condition: service_healthy
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
-      KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: ${KEYCLOAK_POSTGRES_PASSWORD:?Run scripts/init-env.sh}
-      KC_HOSTNAME: http://localhost:8180
-      KC_HEALTH_ENABLED: "true"
-      KC_BOOTSTRAP_ADMIN_USERNAME: keycloak-admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Run scripts/init-env.sh}
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Run scripts/init-env.sh}
-      DEMO_EMPLOYEE_PASSWORD: ${DEMO_EMPLOYEE_PASSWORD:?Run scripts/init-env.sh}
-      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:?Run scripts/init-env.sh}
-    ports:
-      - "127.0.0.1:8180:8080"
-    volumes:
-      - ./deploy/keycloak/roombook-realm.json:/opt/keycloak/data/import/roombook-realm.json:ro
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9000;
-          printf "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3;
-          read -r version status text <&3;
-          [[ "$$status" == 200 ]]'
-      interval: 5s
-      timeout: 4s
-      retries: 30
-      start_period: 30s
-
   migrate:
     <<: *api-image
     command: ["npm", "run", "migration:run"]
@@ -87,16 +38,11 @@ services:
     environment:
       DATABASE_URL: *database-url
       APP_ORIGIN: http://localhost:3100
-      OIDC_ISSUER: http://localhost:8180/realms/roombook
-      OIDC_INTERNAL_ORIGIN: http://keycloak:8080
       OIDC_ALLOW_LOCAL_HTTP: "true"
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Run scripts/init-env.sh}
       SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?Run scripts/init-env.sh}
     depends_on:
       migrate:
         condition: service_completed_successfully
-      keycloak:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 5s
@@ -130,4 +76,3 @@ services:
 
 volumes:
   app-data:
-  keycloak-data:

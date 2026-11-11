@@ -1,4 +1,4 @@
-import { ForbiddenException, Inject, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, type OnModuleInit, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { DataSource, type EntityManager } from 'typeorm';
 import { AUTH_SETTINGS, type AuthSettings } from './auth-settings.js';
 import type { Actor } from './actor.js';
@@ -33,7 +33,7 @@ export interface WriteProof {
 type Purpose = 'login' | 'logout';
 
 @Injectable()
-export class AuthSessions {
+export class AuthSessions implements OnModuleInit {
   private readonly sessions: string;
   private readonly attempts: string;
   private readonly users: string;
@@ -49,6 +49,17 @@ export class AuthSessions {
     this.attempts = schema + '.oidc_transactions';
     this.users = schema + '.users';
     this.encryption = new SessionSecrets(settings.encryptionKey);
+  }
+
+  async onModuleInit(): Promise<void> {
+    await this.bounded(async (manager) => {
+      await manager.query(`DELETE FROM ${this.sessions} s USING ${this.users} u
+        WHERE s.user_id=u.id AND u.oidc_issuer<>$1`, [this.settings.issuer]);
+    });
+  }
+
+  private attemptContext(purpose: Purpose, stateHash: string): string {
+    return `${purpose}:${this.settings.issuer}:${stateHash}`;
   }
 
   private async bounded<T>(operation: (manager: EntityManager) => Promise<T>): Promise<T> {
@@ -79,7 +90,7 @@ export class AuthSessions {
       }
       await manager.query(`INSERT INTO ${this.attempts} (state_hash,browser_hash,purpose,payload_encrypted,expires_at)
         VALUES ($1,$2,$3,$4,now() + interval '5 minutes')`, [
-        stateHash, secretHash(binding), purpose, this.encryption.seal(value, `${purpose}:${stateHash}`),
+        stateHash, secretHash(binding), purpose, this.encryption.seal(value, this.attemptContext(purpose, stateHash)),
       ]);
     });
   }
@@ -93,7 +104,7 @@ export class AuthSessions {
     ) SELECT payload_encrypted FROM consumed`, [stateHash, secretHash(binding), purpose])) as { payload_encrypted: string }[];
     try {
       if (!attempt) throw new Error();
-      return this.encryption.open<T>(attempt.payload_encrypted, `${purpose}:${stateHash}`);
+      return this.encryption.open<T>(attempt.payload_encrypted, this.attemptContext(purpose, stateHash));
     } catch {
       throw new UnauthorizedException('Invalid identity provider transaction');
     }
@@ -138,8 +149,8 @@ export class AuthSessions {
   private async lockSession(manager: EntityManager, session: string | undefined): Promise<SessionRow> {
     if (!session) throw new UnauthorizedException();
     const [row] = await manager.query(`SELECT s.*,u.oidc_subject,u.email FROM ${this.sessions} s
-      JOIN ${this.users} u ON u.id=s.user_id WHERE s.id_hash=$1 FOR UPDATE OF s`,
-    [secretHash(session)]) as SessionRow[];
+      JOIN ${this.users} u ON u.id=s.user_id WHERE s.id_hash=$1 AND u.oidc_issuer=$2 FOR UPDATE OF s`,
+    [secretHash(session), this.settings.issuer]) as SessionRow[];
     if (!row || this.expired(row)) throw new UnauthorizedException();
     return row;
   }
