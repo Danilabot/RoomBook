@@ -23,7 +23,6 @@ interface SessionRow {
 
 export interface Principal extends Actor {
   email: string | null;
-  csrf: string;
 }
 
 export interface WriteProof {
@@ -169,34 +168,59 @@ export class AuthSessions {
 
   async authenticate(session: string | undefined, proof?: WriteProof): Promise<Principal> {
     if (!session) throw new UnauthorizedException();
-    const principal = await this.bounded(async (manager) => {
-      const row = await this.lockSession(manager, session);
-      const context = this.context(row.id_hash, row.user_id);
-      let payload = this.decrypt(row);
-      if (proof) this.assertWrite(payload, proof);
-      let expiry = row.access_expires_at;
-      let encrypted = row.tokens_encrypted;
-      if (expiry.getTime() <= Date.now()) {
-        try {
-          const { expiresAt, ...fresh } = await this.provider.refresh({ ...payload, expiresAt: expiry }, row.oidc_subject, row.provider_sid);
-          if (this.expired(row)) throw new UnauthorizedException();
-          payload = { ...fresh, csrf: payload.csrf };
-          expiry = expiresAt;
-          encrypted = this.encryption.seal(payload, context);
-        } catch (error) {
-          if (!(error instanceof UnauthorizedException)) throw error;
-          await this.deleteSession(manager, row.id_hash);
-          return undefined;
+    let spent: SessionRow | undefined;
+    let principal: Principal | undefined;
+    try {
+      principal = await this.bounded(async (manager) => {
+        const row = await this.lockSession(manager, session);
+        const context = this.context(row.id_hash, row.user_id);
+        let payload = this.decrypt(row);
+        if (proof) this.assertWrite(payload, proof);
+        let expiry = row.access_expires_at;
+        let encrypted = row.tokens_encrypted;
+        if (expiry.getTime() <= Date.now()) {
+          try {
+            const { expiresAt, ...fresh } = await this.provider.refresh(
+              { ...payload, expiresAt: expiry }, row.oidc_subject, row.provider_sid, () => { spent = row; },
+            );
+            if (this.expired(row)) throw new UnauthorizedException();
+            payload = { ...fresh, csrf: payload.csrf };
+            expiry = expiresAt;
+            encrypted = this.encryption.seal(payload, context);
+          } catch (error) {
+            if (!spent && !(error instanceof UnauthorizedException)) throw error;
+            await this.deleteSession(manager, row.id_hash);
+            return undefined;
+          }
         }
-      }
-      await manager.query(`UPDATE ${this.sessions}
-        SET idle_expires_at=LEAST(absolute_expires_at, clock_timestamp() + interval '30 minutes'),
-            access_expires_at=$2, tokens_encrypted=$3 WHERE id_hash=$1`, [row.id_hash, expiry, encrypted]);
-      return { id: row.user_id, email: row.email, roles: payload.roles, csrf: payload.csrf };
-    });
-    if (!principal) throw new UnauthorizedException();
+        await manager.query(`UPDATE ${this.sessions}
+          SET idle_expires_at=LEAST(absolute_expires_at, clock_timestamp() + interval '30 minutes'),
+              access_expires_at=$2, tokens_encrypted=$3 WHERE id_hash=$1`, [row.id_hash, expiry, encrypted]);
+        return { id: row.user_id, email: row.email, roles: payload.roles };
+      });
+    } catch (error) {
+      if (!spent || await this.stillHasSessionAfterRevocation(spent)) throw error;
+      throw new UnauthorizedException('Sign in again');
+    }
+    if (!principal) throw new UnauthorizedException('Sign in again');
     if (principal.roles.length === 0) throw new ForbiddenException();
     return principal;
+  }
+
+  private async stillHasSessionAfterRevocation(spent: SessionRow): Promise<boolean> {
+    return this.bounded(async (manager) => {
+      // A failed write or commit may have rolled back. Revoke only the old ciphertext so
+      // another transaction's successfully stored replacement survives an ambiguous commit.
+      await manager.query(`DELETE FROM ${this.sessions} WHERE id_hash=$1 AND tokens_encrypted=$2`,
+        [spent.id_hash, spent.tokens_encrypted]);
+      const rows = await manager.query(`SELECT 1 FROM ${this.sessions} WHERE id_hash=$1`, [spent.id_hash]) as unknown[];
+      return rows.length > 0;
+    });
+  }
+
+  async csrf(session: string | undefined): Promise<string> {
+    if (!session) throw new UnauthorizedException();
+    return this.bounded(async (manager) => this.decrypt(await this.lockSession(manager, session)).csrf);
   }
 
   async logout(session: string | undefined, proof: WriteProof): Promise<{ url?: URL; binding?: string }> {

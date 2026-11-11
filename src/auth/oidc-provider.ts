@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Inject, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { createRemoteJWKSet, customFetch, errors, jwtVerify } from 'jose';
 import * as oidc from 'openid-client';
@@ -35,6 +36,7 @@ export class OidcProvider {
   private configuration?: Promise<oidc.Configuration>;
   private keys?: ReturnType<typeof createRemoteJWKSet>;
   private readonly publicOrigin: string;
+  private readonly refreshGrant = new AsyncLocalStorage<{ endpoint: string; accepted: () => void }>();
 
   constructor(@Inject(AUTH_SETTINGS) private readonly settings: AuthSettings) {
     this.publicOrigin = new URL(settings.issuer).origin;
@@ -59,6 +61,8 @@ export class OidcProvider {
         await response.body?.cancel();
         throw providerUnavailable();
       }
+      const grant = this.refreshGrant.getStore();
+      if (response.ok && grant?.endpoint === endpoint.href) grant.accepted();
       return response;
     } catch {
       throw providerUnavailable();
@@ -156,10 +160,16 @@ export class OidcProvider {
     }
   }
 
-  async refresh(previous: VerifiedTokens, subject: string, sid: string): Promise<VerifiedTokens> {
+  async refresh(
+    previous: VerifiedTokens, subject: string, sid: string, accepted: () => void,
+  ): Promise<VerifiedTokens> {
     const client = await this.client();
     try {
-      const tokens = await oidc.refreshTokenGrant(client, previous.refreshToken);
+      // A successful token response can spend the old refresh credential before token verification runs.
+      const endpoint = this.sameOrigin(client.serverMetadata().token_endpoint!).href;
+      const tokens = await this.refreshGrant.run(
+        { endpoint, accepted }, () => oidc.refreshTokenGrant(client, previous.refreshToken),
+      );
       const identity = tokens.claims();
       if (
         tokens.token_type.toLowerCase() !== 'bearer' ||

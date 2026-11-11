@@ -7,6 +7,12 @@ export const secretHash = (value: string) => createHash('sha256').update(value).
 export const secretsEqual = (expected: string, received: string) =>
   timingSafeEqual(Buffer.from(secretHash(expected), 'hex'), Buffer.from(secretHash(received), 'hex'));
 
+export const SESSION_COOKIE = 'roombook_session';
+
+export function browserCookieName(name: string, localHttp: boolean): string {
+  return localHttp ? name : '__Host-' + name;
+}
+
 export function readCookie(header: string | undefined, name: string): string | undefined {
   const values = (header ?? '').split(';').map((value) => value.trim())
     .filter((value) => value.startsWith(name + '='));

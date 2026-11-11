@@ -28,6 +28,8 @@ let roles = ['employee'];
 let subject = 'keycloak-subject';
 let email = 'employee@example.test';
 let refreshes = 0;
+let validRefreshToken = 'fixture-refresh-token';
+let keyFetchUnavailable = false;
 let app: INestApplication;
 let bootstrap: DataSource;
 let db: DataSource;
@@ -45,19 +47,28 @@ const fixture = createServer(async (req, res) => {
         id_token_signing_alg_values_supported: ['RS256'], code_challenge_methods_supported: ['S256'],
       });
     }
-    if (path === base + '/jwks') return json(200, { keys: [jwk] });
+    if (path === base + '/jwks') return keyFetchUnavailable ? json(503, {}) : json(200, { keys: [jwk] });
     if (path !== base + '/token') return json(404, {});
     let body = '';
     for await (const chunk of req) body += String(chunk);
     const params = new URLSearchParams(body);
     const refreshing = params.get('grant_type') === 'refresh_token';
-    if (refreshing) refreshes++;
+    if (refreshing) {
+      refreshes++;
+      if (params.get('refresh_token') !== validRefreshToken) return json(400, { error: 'invalid_grant' });
+    }
     else assert.equal(createHash('sha256').update(params.get('code_verifier') ?? '').digest('base64url'), challenge);
     if (variant === 'outage') return json(503, {});
     if (variant === 'invalid_grant') return json(400, { error: 'invalid_grant' });
+    if (refreshing && ['rotate-before-jwks-outage', 'rotate-valid'].includes(variant)) {
+      validRefreshToken = 'rotated-refresh-token';
+      keyFetchUnavailable = variant === 'rotate-before-jwks-outage';
+    }
     const iat = Math.floor(Date.now() / 1000);
     const sign = (aud: string, payload: Record<string, unknown>) =>
-      new SignJWT(payload).setProtectedHeader({ alg: 'RS256', kid: 'fixture-key' })
+      new SignJWT(payload).setProtectedHeader({ alg: 'RS256',
+        kid: refreshing && variant === 'rotate-before-jwks-outage' ? 'rotated-key' : 'fixture-key',
+      })
         .setSubject(subject).setIssuer(issuer).setAudience(aud)
         .setIssuedAt(iat).setExpirationTime(iat + 300).sign(keys.privateKey);
     const access = await sign(variant === 'wrong-audience' ? 'unrelated-api' : 'roombook-api', {
@@ -66,7 +77,7 @@ const fixture = createServer(async (req, res) => {
     });
     return json(200, {
       token_type: 'Bearer', access_token: variant === 'bad-signature' ? access.slice(0, -5) + '_____': access,
-      refresh_token: 'fixture-refresh-token', expires_in: 300,
+      refresh_token: validRefreshToken, expires_in: 300,
       ...(refreshing ? {} : { id_token: await sign('roombook-web', {
         nonce: variant === 'wrong-nonce' ? 'unrelated-nonce' : nonce,
         sid: 'keycloak-session', email, name: 'Test Employee',
@@ -299,4 +310,100 @@ test('requires explicit local HTTP and a separate validated encryption key', () 
   assert.throws(() => authSettings({ ...secure, APP_ORIGIN: 'http://localhost:3100' }), /APP_ORIGIN/);
   assert.throws(() => authSettings({ ...secure, OIDC_ALLOW_LOCAL_HTTP: 'true' }), /loopback/);
   assert.throws(() => authSettings({ ...secure, SESSION_ENCRYPTION_KEY: secure.OIDC_CLIENT_SECRET }), /SESSION_ENCRYPTION_KEY/);
+});
+
+test('a user without app roles can obtain logout CSRF and revoke their session', async () => {
+  const employee = await login();
+  roles = [];
+  try {
+    const roleless = await login();
+    await expireAccess(employee);
+    for (const session of [roleless, employee]) {
+      await api().get('/api/auth/me').set('Cookie', session).expect(403);
+      await api().get('/api/rooms').set('Cookie', session).expect(403);
+      const token = await csrf(session);
+      await api().post('/api/auth/logout').set('Cookie', session)
+        .set('Origin', origin).set('X-CSRF-Token', token).expect(200);
+      await api().get('/api/auth/csrf').set('Cookie', session).expect(401);
+    }
+  } finally { roles = ['employee']; }
+});
+
+test('revokes a session when a successful rotating refresh cannot verify its replacement', async () => {
+  const session = await login();
+  // A fresh provider client has no cached JWKS, so post-grant verification must fetch them.
+  const fresh = await NestFactory.create(AppModule, { logger: false, abortOnError: false });
+  configureApp(fresh);
+  await fresh.init();
+  try {
+    await expireAccess(session);
+    variant = 'rotate-before-jwks-outage';
+    const freshApi = request(fresh.getHttpServer());
+    await freshApi.get('/api/auth/me').set('Cookie', session).expect(401);
+    assert.equal(validRefreshToken, 'rotated-refresh-token');
+    keyFetchUnavailable = false;
+    variant = 'valid';
+    const before = refreshes;
+    await freshApi.get('/api/auth/me').set('Cookie', session).expect(401);
+    assert.equal(refreshes, before);
+  } finally {
+    keyFetchUnavailable = false;
+    validRefreshToken = 'fixture-refresh-token';
+    variant = 'valid';
+    await fresh.close();
+  }
+});
+
+test('outside local HTTP the browser cookies use the Secure host prefix and root path', async () => {
+  process.env.APP_ORIGIN = 'https://localhost:3100';
+  let secureApp: INestApplication | undefined;
+  try {
+    secureApp = await NestFactory.create(AppModule, { logger: false, abortOnError: false });
+    configureApp(secureApp);
+    await secureApp.init();
+    const secureApi = request(secureApp.getHttpServer());
+    const login = await secureApi.get('/api/auth/login').expect(302);
+    const headers = login.headers['set-cookie'] as unknown as string[];
+    assert.match(headers[0], /^__Host-roombook_login=[^;]+; Max-Age=300; Path=\/;/);
+    assert.match(headers[0], /; HttpOnly; Secure; SameSite=Lax/);
+    const authUrl = new URL(login.headers.location);
+    nonce = authUrl.searchParams.get('nonce') ?? '';
+    challenge = authUrl.searchParams.get('code_challenge') ?? '';
+    const loginCookie = headers[0].split(';')[0];
+    const state = authUrl.searchParams.get('state');
+    const result = await secureApi.get('/api/auth/callback').set('Cookie', loginCookie)
+      .query({ state, code: 'fixture-code', iss: issuer }).expect(302);
+    const cookies = result.headers['set-cookie'] as unknown as string[];
+    const session = cookies.find((line) => line.startsWith('__Host-roombook_session='));
+    assert.ok(session);
+    assert.match(session, /; Path=\/;/);
+    assert.match(session, /; HttpOnly; Secure; SameSite=Lax/);
+    await secureApi.get('/api/auth/me').set('Cookie', session.split(';')[0]).expect(200);
+  } finally {
+    process.env.APP_ORIGIN = origin;
+    await secureApp?.close();
+  }
+});
+
+test('revokes the old session if storage rejects a verified rotating refresh', async () => {
+  const session = await login();
+  await expireAccess(session);
+  await db.query(`CREATE FUNCTION "${schema}".reject_auth_refresh() RETURNS trigger LANGUAGE plpgsql
+    AS $$ BEGIN RAISE EXCEPTION 'fixture write failure'; END; $$;
+    CREATE TRIGGER reject_auth_refresh BEFORE UPDATE OF tokens_encrypted ON "${schema}".auth_sessions
+    FOR EACH ROW EXECUTE FUNCTION "${schema}".reject_auth_refresh()`);
+  try {
+    variant = 'rotate-valid';
+    await api().get('/api/auth/me').set('Cookie', session).expect(401);
+    assert.equal(validRefreshToken, 'rotated-refresh-token');
+    const before = refreshes;
+    await api().get('/api/auth/csrf').set('Cookie', session).expect(401);
+    await api().get('/api/auth/me').set('Cookie', session).expect(401);
+    assert.equal(refreshes, before);
+  } finally {
+    await db.query(`DROP TRIGGER reject_auth_refresh ON "${schema}".auth_sessions;
+      DROP FUNCTION "${schema}".reject_auth_refresh()`);
+    validRefreshToken = 'fixture-refresh-token';
+    variant = 'valid';
+  }
 });
