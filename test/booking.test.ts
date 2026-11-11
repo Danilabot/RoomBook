@@ -1,7 +1,8 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DataSource } from 'typeorm';
@@ -207,4 +208,73 @@ test('retries reminder delivery after a database failure without losing the book
   }
   assert.equal(await reminders.deliverDue(), 1);
   assert.equal(await reminders.deliverDue(), 0);
+});
+
+test('delivers an in-flight reminder while its booking is concurrently cancelled', async () => {
+  const { body } = await create(booking(11)).expect(201);
+  await db.query(`UPDATE "${schema}".reminder_jobs SET due_at = now() WHERE booking_id = $1`, [body.id]);
+
+  // Pause both real transactions after their first row lock and before either can acquire a second.
+  const cancelGate = randomInt(1, 1_000_000_000);
+  const reminderGate = cancelGate + 1;
+  const gate = db.createQueryRunner();
+  await gate.connect();
+  await gate.query('SELECT pg_advisory_lock($1), pg_advisory_lock($2)', [cancelGate, reminderGate]);
+  await db.query(`
+    CREATE FUNCTION "${schema}".pause_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(TG_ARGV[0]::bigint);
+      RETURN NEW;
+    END;
+    $$;
+    CREATE TRIGGER pause_cancel BEFORE UPDATE ON "${schema}".occupancies FOR EACH ROW
+      WHEN (NEW.id = '${body.id}' AND NEW.status = 'cancelled')
+      EXECUTE FUNCTION "${schema}".pause_mutation('${cancelGate}');
+    CREATE TRIGGER pause_reminder BEFORE INSERT ON "${schema}".notifications FOR EACH ROW
+      WHEN (NEW.booking_id = '${body.id}' AND NEW.type = 'booking_reminder')
+      EXECUTE FUNCTION "${schema}".pause_mutation('${reminderGate}');
+  `);
+  const operations = Promise.allSettled([
+    api().post('/api/bookings/' + body.id + '/cancel').set('Authorization', 'owner').expect(200).then((response) => response.status),
+    app.get(ReminderService).deliverDue(),
+  ]);
+  try {
+    const deadline = Date.now() + 5000;
+    while (true) {
+      const [waiting] = await db.query(`SELECT count(*)::int AS count FROM pg_locks
+        WHERE locktype = 'advisory' AND classid = 0 AND objsubid = 1
+          AND objid IN ($1, $2) AND NOT granted`, [cancelGate, reminderGate]);
+      if (waiting.count === 2) break;
+      assert.ok(Date.now() < deadline, 'Both operations must reach their database barriers');
+      await delay(15);
+    }
+  } finally {
+    await gate.query('SELECT pg_advisory_unlock($1), pg_advisory_unlock($2)', [cancelGate, reminderGate]);
+    await gate.release();
+    await operations;
+  }
+  assert.deepEqual(await operations, [
+    { status: 'fulfilled', value: 200 },
+    { status: 'fulfilled', value: 1 },
+  ]);
+  assert.equal(await app.get(ReminderService).deliverDue(), 0);
+});
+
+test('filters catalogue availability across active bookings and maintenance', async () => {
+  const { body: secondRoom } = await api().post('/api/rooms').set('Authorization', 'admin')
+    .send({ name: 'Orion', location: 'Floor 3', capacity: 8, equipment: [] }).expect(201);
+  const { body: reserved } = await create(booking(12)).expect(201);
+  await api().post('/api/admin/rooms/' + secondRoom.id + '/maintenance').set('Authorization', 'admin')
+    .send({ start: at(12, '09:00'), end: at(12, '10:00'), reason: 'Testing' }).expect(201);
+
+  const catalogue = () => api().get('/api/rooms').set('Authorization', 'owner');
+  await catalogue().query({ start: at(12, '09:00') }).expect(400);
+  await catalogue().query({ start: at(12, '10:00'), end: at(12, '09:00') }).expect(400);
+  await catalogue().query({ start: at(12, '09:30'), end: at(12, '10:00') }).expect(200, []);
+  const adjacent = await catalogue().query({ start: at(12, '10:00'), end: at(12, '10:30') }).expect(200);
+  assert.deepEqual(adjacent.body.map(({ id }: { id: string }) => id), [roomId, secondRoom.id]);
+
+  await api().post('/api/bookings/' + reserved.id + '/cancel').set('Authorization', 'owner').expect(200);
+  const afterCancel = await catalogue().query({ start: at(12, '09:30'), end: at(12, '10:00') }).expect(200);
+  assert.deepEqual(afterCancel.body.map(({ id }: { id: string }) => id), [roomId]);
 });

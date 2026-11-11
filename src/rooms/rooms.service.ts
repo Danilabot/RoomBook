@@ -1,5 +1,7 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource, type EntityManager } from 'typeorm';
+import { parseInterval } from '../bookings/booking-time.js';
+import { activeOverlaps } from '../bookings/occupancy-query.js';
 import { Room } from './room.entity.js';
 import type { CreateRoom, RoomFilters, UpdateRoom } from './room.dto.js';
 
@@ -40,6 +42,14 @@ export class RoomsService {
     const equipment = filters.equipment?.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
     if (equipment?.length) {
       query.andWhere('ARRAY(SELECT lower(item) FROM unnest(room.equipment) AS items(item)) @> CAST(:equipment AS text[])', { equipment });
+    }
+    const { start, end } = filters;
+    if (start !== undefined || end !== undefined) {
+      if (start === undefined || end === undefined) throw new BadRequestException('Provide both start and end to filter availability');
+      const overlaps = activeOverlaps(this.db.manager, parseInterval(start, end))
+        .select('1')
+        .andWhere('occupancy.roomId = room.id');
+      query.andWhere('NOT EXISTS (' + overlaps.getQuery() + ')', overlaps.getParameters());
     }
     return query.getMany();
   }

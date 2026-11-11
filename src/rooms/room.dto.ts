@@ -78,6 +78,16 @@ export class UpdateRoom {
 
 export class RoomFilters {
   @IfProvided()
+  @IsString()
+  @MaxLength(35)
+  start?: string;
+
+  @IfProvided()
+  @IsString()
+  @MaxLength(35)
+  end?: string;
+
+  @IfProvided()
   @Trim()
   @IsString()
   @MaxLength(120)

@@ -1,17 +1,11 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { DataSource, type EntityManager } from 'typeorm';
+import { DataSource } from 'typeorm';
 import { isOccupancyConflict } from '../database/postgres-errors.js';
 import { lockBookableRoom } from '../rooms/rooms.service.js';
 import type { CreateMaintenance } from './booking.dto.js';
-import { parseInterval, requireFutureActive, validateFuture, type Interval } from './booking-time.js';
+import { parseInterval, requireFutureActive, validateFuture } from './booking-time.js';
+import { overlappingOccupancies } from './occupancy-query.js';
 import { Occupancy } from './occupancy.entity.js';
-
-export function overlappingOccupancies(manager: EntityManager, roomId: string, { start, end }: Interval) {
-  return manager.getRepository(Occupancy).createQueryBuilder('occupancy')
-    .where({ roomId, status: 'active' })
-    .andWhere("tstzrange(occupancy.start, occupancy.end, '[)') && tstzrange(:start, :end, '[)')", { start, end })
-    .orderBy('occupancy.start', 'ASC');
-}
 
 function maintenanceConflict(conflicts: Occupancy[]): ConflictException {
   return new ConflictException({ statusCode: 409, message: 'Maintenance conflicts with existing occupancy', conflicts });

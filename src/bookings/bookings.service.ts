@@ -121,7 +121,8 @@ export class BookingsService {
   private async lockBooking(manager: EntityManager, id: string, ownerId?: string): Promise<Occupancy> {
     const booking = await manager.getRepository(Occupancy).findOne({
       where: { id, kind: 'booking', ...(ownerId ? { ownerId } : {}) },
-      lock: { mode: 'pessimistic_write' },
+      // Booking IDs are immutable. Allow a reminder's foreign key check while holding this lock.
+      lock: { mode: 'for_no_key_update' },
     });
     if (!booking) throw new NotFoundException('Booking not found');
     return booking;

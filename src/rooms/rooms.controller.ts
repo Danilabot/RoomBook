@@ -4,7 +4,7 @@ import { CurrentActor, requireAdmin, type Actor } from '../auth/actor.js';
 import { AdminGuard } from '../auth/admin.guard.js';
 import { TimeWindow } from '../bookings/booking.dto.js';
 import { parseInterval } from '../bookings/booking-time.js';
-import { overlappingOccupancies } from '../bookings/maintenance.service.js';
+import { overlappingOccupancies } from '../bookings/occupancy-query.js';
 import { CreateRoom, RoomFilters, UpdateRoom } from './room.dto.js';
 import { RoomsService } from './rooms.service.js';
 
