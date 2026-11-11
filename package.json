@@ -10,7 +10,10 @@
     "start": "node dist/src/main.js",
     "migration:run": "typeorm migration:run -d dist/src/database/data-source.js",
     "migration:revert": "typeorm migration:revert -d dist/src/database/data-source.js",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "web:test": "npm --prefix web test"
   },
   "dependencies": {
     "@nestjs/common": "12.2.0",
