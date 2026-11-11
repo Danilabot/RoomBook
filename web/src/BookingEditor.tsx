@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import { ApiError, type Api, type Booking, type Room } from './api';
-import { officeInput, parseRange } from './time';
+import { officeInput, parseRange, requireFutureStart } from './time';
 import { Field, Problem, TimeFields, submit, useAction } from './ui';
 
 export interface BookingDraft {
@@ -16,18 +16,19 @@ export function draftFor(booking: Booking): BookingDraft {
     start: officeInput(booking.start), end: officeInput(booking.end) };
 }
 
-export function BookingEditor({ api, draft, onChange, onSuccess, onConflict, onClose, booking, rooms, roomName }: {
+export function BookingEditor({ api, draft, onChange, onSuccess, onConflict, onClose, onBusyChange, booking, rooms, roomName }: {
   api: Api;
   draft: BookingDraft;
   onChange: (draft: BookingDraft) => void;
   onSuccess: (booking: Booking) => void;
   onConflict?: () => void;
   onClose?: () => void;
+  onBusyChange?: (busy: boolean) => void;
   booking?: Booking;
   rooms?: Room[];
   roomName?: string;
 }) {
-  const action = useAction();
+  const action = useAction(onBusyChange);
   const attempt = useRef<{ body: string; key: string }>(undefined);
   const change = (field: keyof BookingDraft, value: string) => {
     onChange({ ...draft, [field]: value });
@@ -40,13 +41,17 @@ export function BookingEditor({ api, draft, onChange, onSuccess, onConflict, onC
     const payload = { roomId: draft.roomId, title, description: draft.description.trim() || null, ...interval };
     let result: Booking;
     if (booking) {
+      requireFutureStart(interval.start);
       const original = draftFor(booking);
       const { start, end, ...details } = payload;
       const patch = { ...details, ...(draft.start !== original.start ? { start } : {}), ...(draft.end !== original.end ? { end } : {}) };
       result = await api.write<Booking>('/bookings/' + booking.id, 'PATCH', patch);
     } else {
       const body = JSON.stringify(payload);
-      if (attempt.current?.body !== body) attempt.current = { body, key: crypto.randomUUID() };
+      if (attempt.current?.body !== body) {
+        requireFutureStart(interval.start);
+        attempt.current = { body, key: crypto.randomUUID() };
+      }
       try {
         result = await api.write<Booking>('/bookings', 'POST', payload, attempt.current.key);
       } catch (error) {

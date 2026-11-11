@@ -12,6 +12,7 @@ export function Bookings({ api, rooms, admin = false }: { api: Api; rooms: Room[
   const [edit, setEdit] = useState<{ booking: Booking; draft: BookingDraft } | null>(null);
   const [cancel, setCancel] = useState<Booking | null>(null);
   const [success, setSuccess] = useState('');
+  const [writePending, setWritePending] = useState(false);
   const base = admin ? '/admin/bookings' : '/bookings';
   const bookings = useResource<Booking[]>(api, base);
   const byRoom = new Map(rooms.map((room) => [room.id, room]));
@@ -38,8 +39,8 @@ export function Bookings({ api, rooms, admin = false }: { api: Api; rooms: Room[
     </div>}
     {admin && <h2 className="sr-only" id="bookings-heading">Бронирования сотрудников</h2>}
     <div className="switcher" aria-label="Период бронирований">
-      <button type="button" aria-pressed={!showHistory} onClick={() => changeView(false)}>Предстоящие</button>
-      <button type="button" aria-pressed={showHistory} onClick={() => changeView(true)}>История</button>
+      <button type="button" disabled={writePending} aria-pressed={!showHistory} onClick={() => changeView(false)}>Предстоящие</button>
+      <button type="button" disabled={writePending} aria-pressed={showHistory} onClick={() => changeView(true)}>История</button>
     </div>
     <Status>{success}</Status>
     {bookings.loading && <Loading />}
@@ -64,20 +65,20 @@ export function Bookings({ api, rooms, admin = false }: { api: Api; rooms: Room[
             </span>
           </div>
           {isFutureActive(booking) && <div className="actions item-actions">
-            {!admin && <button type="button" className="button secondary small" onClick={() => {
+            {!admin && <button type="button" className="button secondary small" disabled={writePending} onClick={() => {
               setCancel(null); setSuccess(''); setEdit({ booking, draft: draftFor(booking) });
             }}>Изменить</button>}
-            <button type="button" className="button danger small" onClick={() => {
+            <button type="button" className="button danger small" disabled={writePending} onClick={() => {
               setEdit(null); setSuccess(''); setCancel(booking);
             }}>Отменить бронь</button>
           </div>}
           {edit?.booking.id === booking.id && <div className="inline-editor">
-            <BookingEditor api={api} booking={booking} rooms={rooms} draft={edit.draft}
+            <BookingEditor api={api} booking={booking} rooms={rooms} draft={edit.draft} onBusyChange={setWritePending}
               onChange={(draft) => setEdit({ booking, draft })}
               onSuccess={() => saved('Бронирование обновлено.')} onClose={() => setEdit(null)} />
           </div>}
           {cancel?.id === booking.id && <div className="inline-editor">
-            <CancelBooking api={api} path={base + '/' + booking.id + '/cancel'} admin={admin}
+            <CancelBooking api={api} path={base + '/' + booking.id + '/cancel'} admin={admin} onBusyChange={setWritePending}
               onClose={() => setCancel(null)} onSuccess={() => saved('Бронирование отменено.')} />
           </div>}
         </article>;
@@ -86,11 +87,11 @@ export function Bookings({ api, rooms, admin = false }: { api: Api; rooms: Room[
   </section>;
 }
 
-function CancelBooking({ api, path, admin, onClose, onSuccess }: {
-  api: Api; path: string; admin: boolean; onClose: () => void; onSuccess: () => void;
+function CancelBooking({ api, path, admin, onClose, onSuccess, onBusyChange }: {
+  api: Api; path: string; admin: boolean; onClose: () => void; onSuccess: () => void; onBusyChange: (busy: boolean) => void;
 }) {
   const [reason, setReason] = useState('');
-  const action = useAction();
+  const action = useAction(onBusyChange);
   return <form aria-label="Подтверждение отмены бронирования" onSubmit={submit(() => void action.run(async () => {
     if (admin && !reason.trim()) throw 'Укажите причину отмены.';
     await api.write(path, 'POST', admin ? { reason: reason.trim() } : undefined);

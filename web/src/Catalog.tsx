@@ -15,6 +15,7 @@ export function Catalog({ api, rooms }: { api: Api; rooms: ReturnType<typeof use
   const [selectedStart, setSelectedStart] = useState('');
   const [selectedEnd, setSelectedEnd] = useState('');
   const lastCard = useRef<HTMLButtonElement>(null);
+  const resultsHeading = useRef<HTMLHeadingElement>(null);
   const filtered = useResource<Room[]>(api, query ? '/rooms?' + query : null);
   const results = query ? filtered : rooms;
   const change = (field: keyof typeof filters, value: string) => setFilters({ ...filters, [field]: value });
@@ -84,7 +85,7 @@ export function Catalog({ api, rooms }: { api: Api; rooms: ReturnType<typeof use
         </form>
         <section aria-labelledby="results-title">
           <div className="section-heading result-heading">
-            <h2 id="results-title">Каталог комнат</h2>
+            <h2 id="results-title" ref={resultsHeading} tabIndex={-1}>Каталог комнат</h2>
             {results.data && <span className="result-count" role="status">Найдено: {results.data.length}</span>}
           </div>
           {results.loading && <Loading />}
@@ -109,17 +110,21 @@ export function Catalog({ api, rooms }: { api: Api; rooms: ReturnType<typeof use
         </section>
       </div>
     </div>
-    {selection && <RoomDetail api={api} room={selection} initialStart={selectedStart} initialEnd={selectedEnd} onClose={() => {
+    {selection && <RoomDetail api={api} room={selection} initialStart={selectedStart} initialEnd={selectedEnd}
+      onAvailabilityChange={selectedStart ? filtered.reload : undefined} onClose={() => {
       setSelection(null);
-      requestAnimationFrame(() => lastCard.current?.focus());
+      requestAnimationFrame(() => {
+        if (lastCard.current?.isConnected) lastCard.current.focus();
+        else resultsHeading.current?.focus();
+      });
     }} />}
   </>;
 }
 
 const segmentLabels = { free: 'Свободно', booking: 'Занято', maintenance: 'Обслуживание' };
 
-function RoomDetail({ api, room, initialStart, initialEnd, onClose }: {
-  api: Api; room: Room; initialStart: string; initialEnd: string; onClose: () => void;
+function RoomDetail({ api, room, initialStart, initialEnd, onAvailabilityChange, onClose }: {
+  api: Api; room: Room; initialStart: string; initialEnd: string; onAvailabilityChange?: () => void; onClose: () => void;
 }) {
   const defaultDay = nextSlot(officeDay()).start ? officeDay() : stepDay(officeDay(), 1);
   const [day, setDay] = useState(initialStart.slice(0, 10) || defaultDay);
@@ -133,6 +138,10 @@ function RoomDetail({ api, room, initialStart, initialEnd, onClose }: {
   const path = from && to ? '/rooms/' + room.id + '/availability?' + new URLSearchParams({ start: from, end: to }) : null;
   const availability = useResource<Interval[]>(api, path);
   const segments = availability.data ? schedule(day, availability.data) : [];
+  const refreshAvailability = () => {
+    availability.reload();
+    onAvailabilityChange?.();
+  };
   const displayDate = (next: string) => {
     if (!officeInstant(next + 'T08:00')) return;
     setDay(next);
@@ -187,12 +196,12 @@ function RoomDetail({ api, room, initialStart, initialEnd, onClose }: {
         <Status>{success}</Status>
         <BookingEditor api={api} draft={draft} roomName={room.name}
           onChange={(next) => { setDraft(next); setSuccess(''); }}
-          onConflict={availability.reload}
+          onConflict={refreshAvailability}
           onSuccess={(booking) => {
             setSuccess('Бронирование создано.');
             setDraft({ roomId: room.id, title: '', description: '', ...nextSlot(officeDay(booking.start)) });
             setDay(officeDay(booking.start));
-            availability.reload();
+            refreshAvailability();
           }} />
       </section>
     </div>

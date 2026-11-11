@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from './App';
 
@@ -22,13 +22,16 @@ function mockApi(routes: Route[]) {
     const index = remaining.findIndex(([pattern]) => path.startsWith(pattern));
     if (index < 0) throw new Error(`Unexpected request ${path}`);
     const [, data, status = 200] = remaining.splice(index, 1)[0];
-    return new Response(JSON.stringify(data), { status });
+    const result = await data;
+    if (result instanceof Error) throw result;
+    return new Response(JSON.stringify(result), { status });
   }));
   return requests;
 }
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 test('shows the login link for a signed-out session and retries temporary auth failures', async () => {
@@ -190,4 +193,93 @@ test('requires an admin reason before cancelling a booking', async () => {
   fireEvent.click(confirm);
   await screen.findByText('Бронирование отменено.');
   expect(requests.find(({ path }) => path === 'POST /api/admin/bookings/b1/cancel')?.body).toEqual({ reason: 'Работы в офисе' });
+});
+
+test.each([201, 409])('refreshes free-window results after a booking returns %s', async (status) => {
+  const requests = mockApi([
+    ['GET /api/auth/me', employee],
+    ['GET /api/rooms?start=', [room]], ['GET /api/rooms?start=', []], ['GET /api/rooms?', [room]],
+    ['GET /api/rooms/room-1/availability', []], ['GET /api/rooms/room-1/availability', []],
+    ['GET /api/auth/csrf', { csrfToken: 'proof' }], ['POST /api/bookings', booking, status],
+  ]);
+  render(<App />);
+  await screen.findByRole('heading', { name: room.name });
+  fireEvent.change(screen.getByLabelText('Свободна с'), { target: { value: '2099-06-15T10:00' } });
+  fireEvent.change(screen.getByLabelText('Свободна до'), { target: { value: '2099-06-15T11:00' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Найти комнаты' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Расписание комнаты Атлас' }));
+  fireEvent.change(screen.getByLabelText('Название встречи'), { target: { value: booking.title } });
+  fireEvent.click(screen.getByRole('button', { name: 'Забронировать' }));
+  await screen.findByText(status === 201 ? 'Бронирование создано.' : 'Этот интервал уже занят. Выберите другое время.');
+  fireEvent.click(screen.getByRole('button', { name: 'К каталогу' }));
+  expect(await screen.findByText('Комнаты не найдены')).toBeTruthy();
+  const searches = requests.filter(({ path }) => path.startsWith('GET /api/rooms?start='));
+  expect(searches).toHaveLength(2);
+  expect(searches[1].path).toBe(searches[0].path);
+});
+
+test('replays a lost creation response after start, while rejecting a new past booking', async () => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(booking.start) - 30_000);
+  const requests = mockApi([
+    ['GET /api/auth/me', employee], ['GET /api/rooms?', [room]],
+    ['GET /api/rooms/room-1/availability', []], ['GET /api/rooms/room-1/availability', []],
+    ['GET /api/auth/csrf', { csrfToken: 'proof' }], ['POST /api/bookings', new TypeError('Connection closed after commit')],
+    ['GET /api/auth/csrf', { csrfToken: 'proof' }], ['POST /api/bookings', booking, 201],
+  ]);
+  render(<App />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Расписание комнаты Атлас' }));
+  const title = screen.getByLabelText('Название встречи');
+  fireEvent.change(title, { target: { value: booking.title } });
+  fireEvent.change(screen.getByLabelText('Начало'), { target: { value: '2099-06-15T10:00' } });
+  fireEvent.change(screen.getByLabelText('Окончание'), { target: { value: '2099-06-15T11:00' } });
+  const submit = () => fireEvent.click(screen.getByRole('button', { name: 'Забронировать' }));
+  submit();
+  await screen.findByText('Сервис временно недоступен. Попробуйте ещё раз.');
+
+  clock.mockReturnValue(Date.parse(booking.start) + 1);
+  fireEvent.change(title, { target: { value: 'Новая встреча' } });
+  submit();
+  await screen.findByText('Время начала должно быть в будущем.');
+  expect(requests.filter(({ path }) => path === 'POST /api/bookings')).toHaveLength(1);
+
+  fireEvent.change(title, { target: { value: booking.title } });
+  submit();
+  await screen.findByText('Бронирование создано.');
+  const writes = requests.filter(({ path }) => path === 'POST /api/bookings');
+  expect(writes).toHaveLength(2);
+  expect(writes[0].headers.get('Idempotency-Key')).toBeTruthy();
+  expect(writes[1].headers.get('Idempotency-Key')).toBe(writes[0].headers.get('Idempotency-Key'));
+  expect(writes[1].body).toEqual(writes[0].body);
+});
+
+test.each([
+  { open: 'Изменить', confirm: 'Сохранить изменения', endpoint: 'PATCH /api/bookings/b1', notice: 'Бронирование обновлено.' },
+  { open: 'Отменить бронь', confirm: 'Подтвердить отмену', endpoint: 'POST /api/bookings/b1/cancel', notice: 'Бронирование отменено.' },
+])('prevents opening a different draft during $endpoint', async ({ open, confirm, endpoint, notice }) => {
+  const other = { ...booking, id: 'b2', title: 'Другая встреча' };
+  let finish!: (updated: typeof booking) => void;
+  const pending = new Promise<typeof booking>((resolve) => { finish = resolve; });
+  const requests = mockApi([
+    ['GET /api/auth/me', employee], ['GET /api/rooms?', [room]], ['GET /api/bookings', [booking, other]],
+    ['GET /api/auth/csrf', { csrfToken: 'proof' }], [endpoint, pending],
+    ['GET /api/bookings', [other]],
+  ]);
+  render(<App />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Мои бронирования' }));
+  const row = (name: string) => within(screen.getByRole('heading', { name }).closest('article')!);
+  await screen.findByRole('heading', { name: booking.title });
+  fireEvent.click(row(booking.title).getByRole('button', { name: open }));
+  fireEvent.click(screen.getByRole('button', { name: confirm }));
+  await waitFor(() => expect(requests.some(({ path }) => path === endpoint)).toBe(true));
+
+  const editOther = row(other.title).getByRole<HTMLButtonElement>('button', { name: 'Изменить' });
+  const cancelOther = row(other.title).getByRole<HTMLButtonElement>('button', { name: 'Отменить бронь' });
+  const disabledDuringWrite = editOther.disabled && cancelOther.disabled;
+  await act(async () => finish(booking));
+  await screen.findByText(notice);
+  expect(disabledDuringWrite).toBe(true);
+  const editAfterWrite = await screen.findByRole<HTMLButtonElement>('button', { name: 'Изменить' });
+  expect(editAfterWrite.disabled).toBe(false);
+  fireEvent.click(editAfterWrite);
+  expect((screen.getByLabelText('Название встречи') as HTMLInputElement).value).toBe(other.title);
 });

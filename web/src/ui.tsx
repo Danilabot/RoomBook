@@ -22,7 +22,7 @@ export function useResource<T>(api: Api, path: string | null) {
   return { data: current?.data, error: current?.error, loading: !!path && !current, reload: () => setRevision((n) => n + 1) };
 }
 
-export function useAction() {
+export function useAction(onBusyChange?: (busy: boolean) => void) {
   const active = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
@@ -30,6 +30,7 @@ export function useAction() {
     if (active.current) return;
     active.current = true;
     setBusy(true);
+    onBusyChange?.(true);
     setError(undefined);
     try {
       await action();
@@ -38,6 +39,7 @@ export function useAction() {
     } finally {
       active.current = false;
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
   return { busy, error, run, clear: () => setError(undefined) };

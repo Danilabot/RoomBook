@@ -40,12 +40,16 @@ export function displayRange(start: string, end: string) {
     : first + ' — ' + dayTitle(officeDay(end)) + ', ' + officeClock(end);
 }
 
+export function requireFutureStart(start: string) {
+  if (Date.parse(start) <= Date.now()) throw 'Время начала должно быть в будущем.';
+}
+
 export function parseRange(from: string, to: string, mode: 'filter' | 'booking' | 'maintenance') {
   const start = officeInstant(from);
   const end = officeInstant(to);
   if (!start || !end) throw 'Укажите начало и окончание интервала.';
   if (end <= start) throw 'Окончание должно быть позже начала.';
-  if (mode !== 'filter' && Date.parse(start) <= Date.now()) throw 'Время начала должно быть в будущем.';
+  if (mode === 'maintenance') requireFutureStart(start);
   if (mode === 'booking') {
     if (from.slice(0, 10) !== to.slice(0, 10) || from.slice(11) < '08:00' || to.slice(11) > '20:00') {
       throw 'Бронирование должно быть в пределах одного дня, с 08:00 до 20:00 по Москве.';
