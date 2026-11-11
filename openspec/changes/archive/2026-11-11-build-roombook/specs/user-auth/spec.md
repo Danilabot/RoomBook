@@ -1,3 +1,6 @@
+## Purpose
+Identify employees through Keycloak and protect application operations with verified server sessions and role-based access.
+
 ## ADDED Requirements
 ### Requirement: Verified OIDC login
 The system SHALL use authorization-code flow with PKCE S256, state, nonce and cryptographic issuer/audience validation. Browser-bound attempts SHALL be consumed once and expire after five minutes.

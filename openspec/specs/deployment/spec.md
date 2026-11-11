@@ -1,4 +1,10 @@
-## ADDED Requirements
+# deployment Specification
+
+## Purpose
+Provide an isolated reproducible local deployment with persistent data and documented setup and verification.
+
+## Requirements
+
 ### Requirement: deployment
 The system SHALL provide standalone Docker Compose, migration-based schema, persistent volumes, automated tests, demo data and complete startup documentation.
 
